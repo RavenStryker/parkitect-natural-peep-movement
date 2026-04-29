@@ -118,6 +118,11 @@ namespace NaturalPeepMovement
                 _lastSeenPark = currentPark;
                 if (currentPark != null)
                 {
+                    // Backfill any decos that Awoke before our patch was installed
+                    // (park loading begins before mods enable on initial launch).
+                    try { PeepMovementPatcher.MarkerCache.RebuildDecoSetFromScene(); }
+                    catch (Exception ex) { Debug.LogError("[NaturalPeepMovement] RebuildDecoSetFromScene failed: " + ex); }
+
                     try { OnParkLoaded(currentPark); }
                     catch (Exception ex) { Debug.LogError("[NaturalPeepMovement] OnParkLoaded threw: " + ex); }
                 }

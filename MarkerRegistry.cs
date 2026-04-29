@@ -91,6 +91,15 @@ namespace NaturalPeepMovement
             }
         }
 
+        public static bool IsEmpty()
+        {
+            EnsureLoaded();
+            lock (_lock)
+            {
+                return _names.Count == 0;
+            }
+        }
+
         public static bool Register(string name)
         {
             if (string.IsNullOrEmpty(name)) return false;

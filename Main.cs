@@ -42,7 +42,7 @@ namespace NaturalPeepMovement
             "Queues, ride entrances, and shop interactions remain untouched.\n\n" +
             "Multiplayer: All players in the session must have this mod installed.";
 
-        public override string getVersionNumber() => "2.0.0";
+        public override string getVersionNumber() => "2.0.1";
         public override bool isMultiplayerModeCompatible() => true;
         public override bool isRequiredByAllPlayersInMultiplayerMode() => true;
 

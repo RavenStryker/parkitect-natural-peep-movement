@@ -76,6 +76,13 @@ namespace NaturalPeepMovement
                         new Type[] { typeof(Block), typeof(Person) }),
                     postfix: new HarmonyMethod(typeof(PeepMovementPatcher), nameof(Block_canBeWanderedOn_Postfix)));
                 PatchedCount++;
+
+                // Track new decos via Awake on the declaring base. Avoids periodic
+                // FindObjectsOfType scans (which walk every GameObject including peeps).
+                harmony.Patch(
+                    AccessTools.Method(typeof(SerializedMonoBehaviour), "Awake"),
+                    postfix: new HarmonyMethod(typeof(PeepMovementPatcher), nameof(SerializedMonoBehaviour_Awake_Postfix)));
+                PatchedCount++;
             }
             catch (Exception ex)
             {
@@ -153,7 +160,9 @@ namespace NaturalPeepMovement
         }
 
         // Marker AABBs. Refresh on main thread; reads safe from any thread.
-        private static class MarkerCache
+        // Deco list is maintained via Harmony lifecycle patches (see Awake postfix below)
+        // and a one-time scene scan on park load — never iterates non-Deco GameObjects.
+        internal static class MarkerCache
         {
             private const float RefreshIntervalSeconds = 1.0f;
 
@@ -161,7 +170,31 @@ namespace NaturalPeepMovement
             private static List<Bounds> _bounds = new List<Bounds>();
             private static float _lastRefreshTime = -1f;
 
-            // Thread-safe: pure read against a captured snapshot.
+            // Main-thread only. Decos register themselves via Awake; nulls are pruned
+            // lazily during refresh so we don't need an OnDestroy patch.
+            private static readonly HashSet<Deco> _allDecos = new HashSet<Deco>();
+            private static readonly List<Deco> _scratchToRemove = new List<Deco>();
+
+            public static void RegisterDeco(Deco d)
+            {
+                if (d == null) return;
+                _allDecos.Add(d);
+            }
+
+            // Called once per park load to backfill any decos that Awoke before our
+            // Harmony patch was installed (e.g., when the park starts loading before
+            // mods are enabled).
+            public static void RebuildDecoSetFromScene()
+            {
+                _allDecos.Clear();
+                _bounds = new List<Bounds>();
+                _lastRefreshTime = -1f;
+
+                Deco[] decos = UnityEngine.Object.FindObjectsOfType<Deco>();
+                for (int i = 0; i < decos.Length; i++)
+                    if (decos[i] != null) _allDecos.Add(decos[i]);
+            }
+
             public static bool IsBlockBlocked(Block b)
             {
                 if (b == null) return false;
@@ -199,13 +232,23 @@ namespace NaturalPeepMovement
                 if (_lastRefreshTime >= 0f && now - _lastRefreshTime < RefreshIntervalSeconds) return;
                 _lastRefreshTime = now;
 
-                List<Bounds> newBounds = new List<Bounds>();
-
-                Deco[] decos = UnityEngine.Object.FindObjectsOfType<Deco>();
-                for (int i = 0; i < decos.Length; i++)
+                // Empty registry → no work needed; just clear the snapshot if it isn't already.
+                if (MarkerRegistry.IsEmpty())
                 {
-                    Deco d = decos[i];
-                    if (d == null) continue;
+                    if (_bounds.Count != 0) _bounds = new List<Bounds>();
+                    return;
+                }
+
+                List<Bounds> newBounds = new List<Bounds>();
+                _scratchToRemove.Clear();
+
+                foreach (Deco d in _allDecos)
+                {
+                    if (d == null)
+                    {
+                        _scratchToRemove.Add(d);
+                        continue;
+                    }
 
                     string name = d.getReferenceName();
                     if (string.IsNullOrEmpty(name)) continue;
@@ -214,6 +257,9 @@ namespace NaturalPeepMovement
                     if (TryComputeWorldBounds(d, out Bounds wb))
                         newBounds.Add(wb);
                 }
+
+                for (int i = 0; i < _scratchToRemove.Count; i++)
+                    _allDecos.Remove(_scratchToRemove[i]);
 
                 _bounds = newBounds;
             }
@@ -410,6 +456,14 @@ namespace NaturalPeepMovement
             if (!__result) return;
             if (MarkerCache.IsBlockBlocked(__instance))
                 __result = false;
+        }
+
+        // Adds new decos to MarkerCache as they Awake. Filters by `is Deco` so other
+        // SerializedMonoBehaviour subclasses (peeps, rides, etc.) cost only a type check.
+        public static void SerializedMonoBehaviour_Awake_Postfix(SerializedMonoBehaviour __instance)
+        {
+            Deco d = __instance as Deco;
+            if (d != null) MarkerCache.RegisterDeco(d);
         }
 
         // Octile distance so diagonals cost sqrt(2), not 2.
