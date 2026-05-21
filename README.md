@@ -11,7 +11,7 @@ A Parkitect mod that lets peeps and workers walk diagonally between path tiles i
 
 ## Object Avoidance
 - **Register decoractions as path blockers.** Register decorations so peeps treat any path tile they overlap with as unwalkable.
-- **In-game registration window.** Press `Ctrl+Alt+\` (rebindable) while a decoration is selected for placement to open a window that registers or unregisters the active object. Works for items picked from the deco panel or grabbed with the eyedropper.
+- **In-game registration window.** Press `Ctrl+Alt+\` (rebindable) while a decoration is selected for placement to open a window that registers or unregisters the active object. Works for items picked from the deco panel or grabbed with the Object Pipette.
 - **Whole-tile only.** A marker overlapping any portion of a 1×1 path tile blocks the entire tile. Partial tile routing (peeps walking around an object on the same tile) is not supported.
 - **Real-time updates.** Registering or unregistering a object takes effect within about a second. Peeps re-route on the fly, including around ghost previews before placing the object.
 - **Preset library for sharing.** Save your registry as a named JSON file in `Documents/Parkitect/Mods/NaturalPeepMovement/presets/` and load presets back from a dropdown in the registration window. Share the JSON alongside your `.park` file so others see the same avoidance behavior in your park.

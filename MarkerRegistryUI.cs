@@ -144,14 +144,9 @@ namespace NaturalPeepMovement
                     return;
                 }
 
-                string name = TryGetActiveDecoName();
-                if (name == null)
-                {
-                    Debug.Log("[NaturalPeepMovement] Hotkey: no Deco selected for placement.");
-                    return;
-                }
-
-                _openWindow = RegistrationWindow.Build(name);
+                // Always open the window. When no Deco is selected, the window itself
+                // shows a "use the Object Pipette to pick an object" tip.
+                _openWindow = RegistrationWindow.Build(TryGetActiveDecoName());
                 UIWindowFrame frame = UIWindowsController.Instance.spawnWindow(_openWindow);
                 frame.OnClose += OnWindowClosed;
             }

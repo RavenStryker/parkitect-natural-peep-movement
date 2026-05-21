@@ -31,6 +31,7 @@ namespace NaturalPeepMovement
         private TextMeshProUGUI _statusText;
         private TextMeshProUGUI _buttonLabel;
         private Image _buttonImage;
+        private Button _toggleButton;
         private RectTransform _listContent;
         private TMP_InputField _inputField;
         private TextMeshProUGUI _statusLineText;
@@ -50,6 +51,20 @@ namespace NaturalPeepMovement
         private void UpdateStatus()
         {
             if (_statusText == null) return;
+
+            if (string.IsNullOrEmpty(_decoName))
+            {
+                _statusText.text =
+                    "<b>No object selected</b>\n" +
+                    "Use the Object Pipette to pick an object, then it can be registered here.";
+                if (_buttonLabel != null) _buttonLabel.text = "Register";
+                if (_buttonImage != null) _buttonImage.color = RegisterColor;
+                if (_toggleButton != null) _toggleButton.interactable = false;
+                return;
+            }
+
+            if (_toggleButton != null) _toggleButton.interactable = true;
+
             bool registered = MarkerRegistry.Contains(_decoName);
             _statusText.text =
                 "<b>" + _decoName + "</b>\n" +
@@ -430,6 +445,7 @@ namespace NaturalPeepMovement
             win._statusText = status;
             win._buttonLabel = btnLabel;
             win._buttonImage = btnImg;
+            win._toggleButton = btn;
             win._listContent = listContent;
             win._inputField = inputField;
             win._statusLineText = statusLine;
