@@ -310,7 +310,23 @@ namespace NaturalPeepMovement
                 TileHasWall(cornerA) || TileHasWall(cornerB))
                 return false;
 
+            // Force cardinal-only approach to entrance/exit/queue/spawn tiles. Their state
+            // machines and cardinal-side attachment logic don't recognize diagonal arrivals,
+            // which leaves peeps in lost states (e.g., physically at the park entrance but
+            // never transitioning to LEFT_PARK, then wandering outside park bounds).
+            if (IsCardinalOnlyBlock(from) || IsCardinalOnlyBlock(to) ||
+                IsCardinalOnlyBlock(cornerA) || IsCardinalOnlyBlock(cornerB))
+                return false;
+
             return true;
+        }
+
+        // Queue tiles are already excluded by IsWalkablePath. Spawn objects live on
+        // GuestEntrance tiles, so blocking GuestEntrance here covers them too.
+        private static bool IsCardinalOnlyBlock(Block b)
+        {
+            if (b == null) return false;
+            return b is GuestEntrance || b is EntranceExit;
         }
 
         private static bool IsWalkablePath(Block b)
@@ -466,7 +482,7 @@ namespace NaturalPeepMovement
             if (d != null) MarkerCache.RegisterDeco(d);
         }
 
-        // Octile distance so diagonals cost sqrt(2), not 2.
+        // Octile distance for diagonals + turn penalty for straight-line preference.
         public static void Pathfinding_PathNode_calculateCosts_Postfix(
             Pathfinding.PathNode __instance,
             Pathfinding.PathNode fromNode,
@@ -474,21 +490,40 @@ namespace NaturalPeepMovement
             ref float __result)
         {
             if (__instance == null || fromNode == null || pathfindingAgent == null) return;
+            if (GameController.Instance == null || GameController.Instance.park == null) return;
 
-            int dx = Mathf.Abs(__instance.tile.x - fromNode.tile.x);
-            int dz = Mathf.Abs(__instance.tile.z - fromNode.tile.z);
-            if (dx == 0 || dz == 0) return;
-
-            float dy = Mathf.Abs(__instance.tile.y - fromNode.tile.y);
+            int dx = __instance.tile.x - fromNode.tile.x;
+            int dz = __instance.tile.z - fromNode.tile.z;
+            int absDx = Mathf.Abs(dx);
+            int absDz = Mathf.Abs(dz);
 
             Block block1 = GameController.Instance.park.blockData.getBlock(
                 fromNode.tile.x, fromNode.tile.y, fromNode.tile.z);
             Block block2 = GameController.Instance.park.blockData.getBlock(
                 __instance.tile.x, __instance.tile.y, __instance.tile.z);
-
-            float horizontal = Mathf.Max(dx, dz) + Mathf.Min(dx, dz) * 0.4142136f;
             float mult = pathfindingAgent.pathfindingCostsMultiplier(block1, block2);
-            __result = (horizontal + dy) * mult + RandomGenerator.Instance().value * 0.01f;
+
+            // Override the vanilla cost only for diagonal moves. The factor 0.5 is slightly
+            // above the true sqrt(2)-1 (~0.4142), so diagonals still save steps over the
+            // cardinal equivalent but with less margin — biasing A* toward straighter routes
+            // when path lengths are similar.
+            if (absDx != 0 && absDz != 0)
+            {
+                float dy = Mathf.Abs(__instance.tile.y - fromNode.tile.y);
+                float horizontal = Mathf.Max(absDx, absDz) + Mathf.Min(absDx, absDz) * 0.45f;
+                __result = (horizontal + dy) * mult + RandomGenerator.Instance().value * 0.01f;
+            }
+
+            // Turn penalty: any change in step direction (relative to the previous step)
+            // adds a small extra cost. Pushes A* toward straight-line continuations and
+            // collapses equal-cost zig-zag alternatives onto the smoothest route.
+            if (fromNode.parentNode != null)
+            {
+                int prevDx = fromNode.tile.x - fromNode.parentNode.tile.x;
+                int prevDz = fromNode.tile.z - fromNode.parentNode.tile.z;
+                if (prevDx != dx || prevDz != dz)
+                    __result += 0.15f * mult;
+            }
         }
     }
 }
