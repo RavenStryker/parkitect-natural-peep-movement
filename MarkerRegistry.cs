@@ -1,20 +1,51 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using Newtonsoft.Json;
 using UnityEngine;
 
 namespace NaturalPeepMovement
 {
-    internal static class MarkerRegistry
+    [Serializable]
+    public class MarkerOptions
     {
-        [Serializable]
-        private class Persisted
+        public bool OnlyBlockWhileEffectActive;
+        public string DisplayName;
+
+        public MarkerOptions() { }
+        public MarkerOptions(bool onlyBlockWhileEffectActive, string displayName)
         {
-            public List<string> registeredPrefabNames = new List<string>();
+            OnlyBlockWhileEffectActive = onlyBlockWhileEffectActive;
+            DisplayName = displayName;
         }
 
+        public MarkerOptions Copy()
+        {
+            return new MarkerOptions
+            {
+                OnlyBlockWhileEffectActive = OnlyBlockWhileEffectActive,
+                DisplayName = DisplayName,
+            };
+        }
+    }
+
+    public class MarkerRegistryPersisted
+    {
+        public List<MarkerRegistryPersistedMarker> registeredMarkers { get; set; } = new List<MarkerRegistryPersistedMarker>();
+    }
+
+    public class MarkerRegistryPersistedMarker
+    {
+        public string prefabName { get; set; }
+        public bool onlyBlockWhileEffectActive { get; set; }
+        public string displayName { get; set; }
+    }
+
+    internal static class MarkerRegistry
+    {
+
         private static readonly object _lock = new object();
-        private static HashSet<string> _names;
+        private static Dictionary<string, MarkerOptions> _markers;
         private static bool _loaded;
 
         private static string GetFilePath()
@@ -30,37 +61,40 @@ namespace NaturalPeepMovement
             {
                 if (_loaded) return;
 
-                _names = new HashSet<string>(StringComparer.Ordinal);
+                _markers = new Dictionary<string, MarkerOptions>(StringComparer.Ordinal);
                 string path = GetFilePath();
 
                 try
                 {
                     if (File.Exists(path))
                     {
-                        string json = File.ReadAllText(path);
-                        Persisted p = JsonUtility.FromJson<Persisted>(json);
-                        if (p != null && p.registeredPrefabNames != null)
-                        {
-                            for (int i = 0; i < p.registeredPrefabNames.Count; i++)
-                            {
-                                string n = p.registeredPrefabNames[i];
-                                if (!string.IsNullOrEmpty(n)) _names.Add(n);
-                            }
-                        }
+                        MarkerRegistryPersisted p = JsonConvert.DeserializeObject<MarkerRegistryPersisted>(File.ReadAllText(path));
+                        ApplyMarkerRegistryPersistedToMarkers(p, _markers);
                     }
-                    // No file → start empty; users register their own markers.
                 }
                 catch (Exception ex)
                 {
                     Debug.LogError("[NaturalPeepMovement] MarkerRegistry load failed: " + ex);
-                    _names.Clear();
+                    _markers.Clear();
                 }
 
                 _loaded = true;
             }
         }
 
-        // Caller must hold _lock.
+        private static void ApplyMarkerRegistryPersistedToMarkers(MarkerRegistryPersisted p, Dictionary<string, MarkerOptions> target)
+        {
+            target.Clear();
+            if (p == null || p.registeredMarkers == null) return;
+
+            for (int i = 0; i < p.registeredMarkers.Count; i++)
+            {
+                MarkerRegistryPersistedMarker pm = p.registeredMarkers[i];
+                if (pm == null || string.IsNullOrEmpty(pm.prefabName)) continue;
+                target[pm.prefabName] = new MarkerOptions(pm.onlyBlockWhileEffectActive, pm.displayName);
+            }
+        }
+
         private static void SaveLocked()
         {
             string path = GetFilePath();
@@ -70,15 +104,36 @@ namespace NaturalPeepMovement
                 if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
                     Directory.CreateDirectory(dir);
 
-                Persisted p = new Persisted();
-                p.registeredPrefabNames = new List<string>(_names);
-                p.registeredPrefabNames.Sort(StringComparer.Ordinal);
-                File.WriteAllText(path, JsonUtility.ToJson(p, prettyPrint: true));
+                File.WriteAllText(path, JsonConvert.SerializeObject(BuildMarkerRegistryPersisted(_markers), Formatting.Indented));
             }
             catch (Exception ex)
             {
                 Debug.LogError("[NaturalPeepMovement] MarkerRegistry save failed: " + ex);
             }
+        }
+
+        private static MarkerRegistryPersisted BuildMarkerRegistryPersisted(Dictionary<string, MarkerOptions> source)
+        {
+            List<string> sortedNames = new List<string>(source.Keys);
+            sortedNames.Sort(StringComparer.Ordinal);
+
+            MarkerRegistryPersisted p = new MarkerRegistryPersisted
+            {
+                registeredMarkers = new List<MarkerRegistryPersistedMarker>(sortedNames.Count),
+            };
+
+            for (int i = 0; i < sortedNames.Count; i++)
+            {
+                string name = sortedNames[i];
+                MarkerOptions opts = source[name];
+                p.registeredMarkers.Add(new MarkerRegistryPersistedMarker
+                {
+                    prefabName = name,
+                    onlyBlockWhileEffectActive = opts.OnlyBlockWhileEffectActive,
+                    displayName = opts.DisplayName,
+                });
+            }
+            return p;
         }
 
         public static bool Contains(string name)
@@ -87,7 +142,7 @@ namespace NaturalPeepMovement
             EnsureLoaded();
             lock (_lock)
             {
-                return _names.Contains(name);
+                return _markers.ContainsKey(name);
             }
         }
 
@@ -96,7 +151,7 @@ namespace NaturalPeepMovement
             EnsureLoaded();
             lock (_lock)
             {
-                return _names.Count == 0;
+                return _markers.Count == 0;
             }
         }
 
@@ -106,7 +161,8 @@ namespace NaturalPeepMovement
             EnsureLoaded();
             lock (_lock)
             {
-                if (!_names.Add(name)) return false;
+                if (_markers.ContainsKey(name)) return false;
+                _markers[name] = new MarkerOptions();
                 SaveLocked();
                 return true;
             }
@@ -118,7 +174,7 @@ namespace NaturalPeepMovement
             EnsureLoaded();
             lock (_lock)
             {
-                if (!_names.Remove(name)) return false;
+                if (!_markers.Remove(name)) return false;
                 SaveLocked();
                 return true;
             }
@@ -129,13 +185,36 @@ namespace NaturalPeepMovement
             EnsureLoaded();
             lock (_lock)
             {
-                List<string> list = new List<string>(_names);
+                List<string> list = new List<string>(_markers.Keys);
                 list.Sort(StringComparer.Ordinal);
                 return list;
             }
         }
 
-        // Preset files live in presets/ subfolder; Load also writes through to working file.
+        public static MarkerOptions GetOptions(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return null;
+            EnsureLoaded();
+            lock (_lock)
+            {
+                MarkerOptions opts;
+                return _markers.TryGetValue(name, out opts) ? opts.Copy() : null;
+            }
+        }
+
+        public static bool SetOptions(string name, MarkerOptions opts)
+        {
+            if (string.IsNullOrEmpty(name) || opts == null) return false;
+            EnsureLoaded();
+            lock (_lock)
+            {
+                if (!_markers.ContainsKey(name)) return false;
+                _markers[name] = opts.Copy();
+                SaveLocked();
+                return true;
+            }
+        }
+
         private const string PresetsSubfolder = "Mods/NaturalPeepMovement/presets";
 
         private static readonly HashSet<char> InvalidFilenameChars =
@@ -224,9 +303,8 @@ namespace NaturalPeepMovement
 
             try
             {
-                string json = File.ReadAllText(path);
-                Persisted p = JsonUtility.FromJson<Persisted>(json);
-                if (p == null || p.registeredPrefabNames == null)
+                MarkerRegistryPersisted p = JsonConvert.DeserializeObject<MarkerRegistryPersisted>(File.ReadAllText(path));
+                if (p == null || p.registeredMarkers == null || p.registeredMarkers.Count == 0)
                 {
                     error = "File is empty or malformed.";
                     return false;
@@ -235,14 +313,8 @@ namespace NaturalPeepMovement
                 EnsureLoaded();
                 lock (_lock)
                 {
-                    _names.Clear();
-                    for (int i = 0; i < p.registeredPrefabNames.Count; i++)
-                    {
-                        string n = p.registeredPrefabNames[i];
-                        if (!string.IsNullOrEmpty(n)) _names.Add(n);
-                    }
-                    loadedCount = _names.Count;
-                    // Write through so next launch boots from this state.
+                    ApplyMarkerRegistryPersistedToMarkers(p, _markers);
+                    loadedCount = _markers.Count;
                     SaveLocked();
                 }
                 return true;
@@ -267,15 +339,14 @@ namespace NaturalPeepMovement
                 EnsurePresetsFolder();
                 string path = System.IO.Path.Combine(GetPresetsFolder(), clean + ".json");
 
-                Persisted p = new Persisted();
+                MarkerRegistryPersisted p;
                 lock (_lock)
                 {
-                    p.registeredPrefabNames = new List<string>(_names);
+                    p = BuildMarkerRegistryPersisted(_markers);
                 }
-                p.registeredPrefabNames.Sort(StringComparer.Ordinal);
-                savedCount = p.registeredPrefabNames.Count;
+                savedCount = p.registeredMarkers.Count;
 
-                File.WriteAllText(path, JsonUtility.ToJson(p, prettyPrint: true));
+                File.WriteAllText(path, JsonConvert.SerializeObject(p, Formatting.Indented));
                 return true;
             }
             catch (Exception ex)

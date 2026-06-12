@@ -12,7 +12,6 @@ namespace NaturalPeepMovement
 
         private object _harmony;
 
-        // True while waiting for the user to press a combo.
         private bool _isListening;
 
         static Main()
@@ -42,7 +41,7 @@ namespace NaturalPeepMovement
             "Queues, ride entrances, and shop interactions remain untouched.\n\n" +
             "Multiplayer: All players in the session must have this mod installed.";
 
-        public override string getVersionNumber() => "2.0.3";
+        public override string getVersionNumber() => "2.1.0";
         public override bool isMultiplayerModeCompatible() => true;
         public override bool isRequiredByAllPlayersInMultiplayerMode() => true;
 
@@ -82,12 +81,10 @@ namespace NaturalPeepMovement
             }
         }
 
-        // IModSettings — IMGUI panel inside ModsSettingsTab.
 
         public void onSettingsOpened()
         {
             _isListening = false;
-            // Suppress hotkey so binding it doesn't fire the action.
             MarkerRegistryUI.SuppressHotkey = true;
         }
 
@@ -125,7 +122,6 @@ namespace NaturalPeepMovement
                         _isListening = false;
                         e.Use();
                     }
-                    // Pure modifiers ignored; wait for a real key.
                 }
             }
 

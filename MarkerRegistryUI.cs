@@ -12,7 +12,6 @@ namespace NaturalPeepMovement
         private static GameObject _tickerGO;
         private static Park _lastSeenPark;
 
-        // Suppress hotkey while mod settings panel is open.
         public static bool SuppressHotkey { get; set; }
 
         public static void Initialize(Harmony harmony)
@@ -24,6 +23,8 @@ namespace NaturalPeepMovement
                 UnityEngine.Object.DontDestroyOnLoad(_tickerGO);
                 _tickerGO.AddComponent<HotkeyTicker>();
             }
+
+            EffectStateTracker.Initialize();
         }
 
         private static void OnParkLoaded(Park park)
@@ -49,7 +50,6 @@ namespace NaturalPeepMovement
             Debug.Log("[NaturalPeepMovement] Auto-loaded " + loadedCount + " markers from '" + clean +
                 ".json' (matched park name '" + name + "')");
 
-            // Refresh open window so it reflects the new state.
             if (_openWindow != null && _openWindow.windowFrame != null)
             {
                 try { _openWindow.RefreshAll(); }
@@ -96,7 +96,6 @@ namespace NaturalPeepMovement
 
         public class HotkeyTicker : MonoBehaviour
         {
-            // Last frame's combo state for rising-edge detection.
             private bool _lastFrameComboHeld;
 
             private void Update()
@@ -106,7 +105,6 @@ namespace NaturalPeepMovement
                 DetectParkLoad();
             }
 
-            // Poll-based: initial load can precede mod enable, so a Harmony patch misses it.
             private void DetectParkLoad()
             {
                 if (GameController.Instance == null) return;
@@ -118,10 +116,11 @@ namespace NaturalPeepMovement
                 _lastSeenPark = currentPark;
                 if (currentPark != null)
                 {
-                    // Backfill any decos that Awoke before our patch was installed
-                    // (park loading begins before mods enable on initial launch).
                     try { PeepMovementPatcher.MarkerCache.RebuildDecoSetFromScene(); }
                     catch (Exception ex) { Debug.LogError("[NaturalPeepMovement] RebuildDecoSetFromScene failed: " + ex); }
+
+                    try { EffectStateTracker.RebuildFromScene(); }
+                    catch (Exception ex) { Debug.LogError("[NaturalPeepMovement] EffectStateTracker.RebuildFromScene failed: " + ex); }
 
                     try { OnParkLoaded(currentPark); }
                     catch (Exception ex) { Debug.LogError("[NaturalPeepMovement] OnParkLoaded threw: " + ex); }
@@ -136,7 +135,6 @@ namespace NaturalPeepMovement
 
                 if (!risingEdge) return;
 
-                // Pure toggle: if window is open, close it.
                 if (_openWindow != null && _openWindow.windowFrame != null)
                 {
                     _openWindow.windowFrame.close();
@@ -144,8 +142,6 @@ namespace NaturalPeepMovement
                     return;
                 }
 
-                // Always open the window. When no Deco is selected, the window itself
-                // shows a "use the Object Pipette to pick an object" tip.
                 _openWindow = RegistrationWindow.Build(TryGetActiveDecoName());
                 UIWindowFrame frame = UIWindowsController.Instance.spawnWindow(_openWindow);
                 frame.OnClose += OnWindowClosed;
@@ -168,7 +164,6 @@ namespace NaturalPeepMovement
                 return Input.GetKey(HotkeySettings.MainKey);
             }
 
-            // Live-sync the open window to the active DecoBuilder's deco.
             private void AutoSyncWindowDeco()
             {
                 if (_openWindow == null || _openWindow.windowFrame == null) return;
@@ -183,11 +178,12 @@ namespace NaturalPeepMovement
             private static string TryGetActiveDecoName()
             {
                 if (GameController.Instance == null) return null;
-                DecoBuilder builder = GameController.Instance.getActiveMouseTool() as DecoBuilder;
+                Builder builder = GameController.Instance.getActiveMouseTool() as Builder;
                 if (builder == null) return null;
-                Deco deco = builder.builtObjectGO as Deco;
-                if (deco == null) return null;
-                string name = deco.getReferenceName();
+                BuildableObject built = builder.builtObjectGO;
+                if (built == null) return null;
+                if (!(built is Deco) && !(built is PathAttachment)) return null;
+                string name = built.getReferenceName();
                 return string.IsNullOrEmpty(name) ? null : name;
             }
 

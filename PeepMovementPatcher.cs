@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using BehaviourTree;
 using HarmonyLib;
 using UnityEngine;
 
@@ -77,8 +79,16 @@ namespace NaturalPeepMovement
                     postfix: new HarmonyMethod(typeof(PeepMovementPatcher), nameof(Block_canBeWanderedOn_Postfix)));
                 PatchedCount++;
 
-                // Track new decos via Awake on the declaring base. Avoids periodic
-                // FindObjectsOfType scans (which walk every GameObject including peeps).
+                harmony.Patch(
+                    AccessTools.Method(typeof(WalkToPositionAction), "run"),
+                    prefix: new HarmonyMethod(typeof(PeepMovementPatcher), nameof(WalkToPositionAction_run_Prefix)));
+                PatchedCount++;
+
+                harmony.Patch(
+                    AccessTools.Method(typeof(Person), "checkIfReachedNewBlock"),
+                    prefix: new HarmonyMethod(typeof(PeepMovementPatcher), nameof(Person_checkIfReachedNewBlock_Prefix)));
+                PatchedCount++;
+
                 harmony.Patch(
                     AccessTools.Method(typeof(SerializedMonoBehaviour), "Awake"),
                     postfix: new HarmonyMethod(typeof(PeepMovementPatcher), nameof(SerializedMonoBehaviour_Awake_Postfix)));
@@ -109,7 +119,6 @@ namespace NaturalPeepMovement
             _markerCacheTickerGO.AddComponent<MarkerCacheTicker>();
         }
 
-        // Restore diagonal side that vanilla nulls to -1.
         public static void BlockNeighbour_calculateSide_Postfix(BlockNeighbour __instance, Vector3 relativeTo)
         {
             if (__instance == null || __instance.block == null) return;
@@ -126,7 +135,6 @@ namespace NaturalPeepMovement
             __instance.sideBit = 1 << side;
         }
 
-        // Allow diagonal Path-to-Path moves at same height.
         public static void Block_canMoveFromThisTo_Postfix(Block __instance, Block otherBlock, ref bool __result)
         {
             if (__result) return;
@@ -143,7 +151,6 @@ namespace NaturalPeepMovement
             __result = true;
         }
 
-        // Reject diagonals through non-path corners (also feeds visual bitmask).
         public static void Block_findConnected_Postfix(Block __instance, BlockData blockData, ref List<BlockNeighbour> __result)
         {
             if (__result == null || __result.Count == 0) return;
@@ -159,49 +166,58 @@ namespace NaturalPeepMovement
             }
         }
 
-        // Marker AABBs. Refresh on main thread; reads safe from any thread.
-        // Deco list is maintained via Harmony lifecycle patches (see Awake postfix below)
-        // and a one-time scene scan on park load — never iterates non-Deco GameObjects.
         internal static class MarkerCache
         {
             private const float RefreshIntervalSeconds = 1.0f;
 
-            // Atomic ref swap: workers see old or new, never torn.
-            private static List<Bounds> _bounds = new List<Bounds>();
-            private static float _lastRefreshTime = -1f;
-
-            // Main-thread only. Decos register themselves via Awake; nulls are pruned
-            // lazily during refresh so we don't need an OnDestroy patch.
-            private static readonly HashSet<Deco> _allDecos = new HashSet<Deco>();
-            private static readonly List<Deco> _scratchToRemove = new List<Deco>();
-
-            public static void RegisterDeco(Deco d)
+            internal struct MarkerEntry
             {
-                if (d == null) return;
-                _allDecos.Add(d);
+                public Bounds Bounds;
+                public SerializedMonoBehaviour Target;
+                public bool OnlyBlockWhileEffectActive;
             }
 
-            // Called once per park load to backfill any decos that Awoke before our
-            // Harmony patch was installed (e.g., when the park starts loading before
-            // mods are enabled).
+            private static List<MarkerEntry> _entries = new List<MarkerEntry>();
+            private static float _lastRefreshTime = -1f;
+
+            private static readonly HashSet<BuildableObject> _allMarkerCandidates = new HashSet<BuildableObject>();
+            private static readonly List<BuildableObject> _scratchToRemove = new List<BuildableObject>();
+
+            public static void RegisterCandidate(BuildableObject obj)
+            {
+                if (obj == null) return;
+                _allMarkerCandidates.Add(obj);
+            }
+
             public static void RebuildDecoSetFromScene()
             {
-                _allDecos.Clear();
-                _bounds = new List<Bounds>();
+                _allMarkerCandidates.Clear();
+                _entries = new List<MarkerEntry>();
                 _lastRefreshTime = -1f;
 
                 Deco[] decos = UnityEngine.Object.FindObjectsOfType<Deco>();
                 for (int i = 0; i < decos.Length; i++)
-                    if (decos[i] != null) _allDecos.Add(decos[i]);
+                    if (decos[i] != null) _allMarkerCandidates.Add(decos[i]);
+
+                PathAttachment[] pas = UnityEngine.Object.FindObjectsOfType<PathAttachment>();
+                for (int i = 0; i < pas.Length; i++)
+                    if (pas[i] != null) _allMarkerCandidates.Add(pas[i]);
             }
 
-            public static bool IsBlockBlocked(Block b)
+            private static float _currentTimeApprox;
+            public static float CurrentTimeApprox { get { return _currentTimeApprox; } }
+
+            public static void UpdateCurrentTimeMainThread()
+            {
+                _currentTimeApprox = Time.unscaledTime;
+            }
+
+            public static bool IsBlockedByActiveEffectGate(Block b)
             {
                 if (b == null) return false;
-                List<Bounds> snapshot = _bounds;
+                List<MarkerEntry> snapshot = _entries;
                 if (snapshot.Count == 0) return false;
 
-                // Tile footprint: XZ [tileX, tileX+1) x [tileZ, tileZ+1).
                 int tileX = b.tilePosition.x;
                 int tileZ = b.tilePosition.z;
                 float xMin = tileX;
@@ -209,14 +225,139 @@ namespace NaturalPeepMovement
                 float zMin = tileZ;
                 float zMax = tileZ + 1f;
 
-                // Y slack so markers sitting on path still count.
                 float yCenter = b.centerPosition.y;
                 float yMin = yCenter - 0.25f;
                 float yMax = yCenter + 1.0f;
 
                 for (int i = 0; i < snapshot.Count; i++)
                 {
-                    Bounds m = snapshot[i];
+                    MarkerEntry e = snapshot[i];
+                    if (!e.OnlyBlockWhileEffectActive) continue;
+                    Bounds m = e.Bounds;
+                    if (m.max.x <= xMin || m.min.x >= xMax) continue;
+                    if (m.max.z <= zMin || m.min.z >= zMax) continue;
+                    if (m.max.y <= yMin || m.min.y >= yMax) continue;
+                    if (EffectStateTracker.IsActive(e.Target)) return true;
+                }
+                return false;
+            }
+
+            public static bool IsBlockBlocked(Block b)
+            {
+                if (b == null) return false;
+                List<MarkerEntry> snapshot = _entries;
+                if (snapshot.Count == 0) return false;
+
+                int tileX = b.tilePosition.x;
+                int tileZ = b.tilePosition.z;
+                float xMin = tileX;
+                float xMax = tileX + 1f;
+                float zMin = tileZ;
+                float zMax = tileZ + 1f;
+
+                float yCenter = b.centerPosition.y;
+                float yMin = yCenter - 0.25f;
+                float yMax = yCenter + 1.0f;
+
+                for (int i = 0; i < snapshot.Count; i++)
+                {
+                    MarkerEntry e = snapshot[i];
+                    Bounds m = e.Bounds;
+                    if (m.max.x <= xMin || m.min.x >= xMax) continue;
+                    if (m.max.z <= zMin || m.min.z >= zMax) continue;
+                    if (m.max.y <= yMin || m.min.y >= yMax) continue;
+
+                    if (e.OnlyBlockWhileEffectActive && !EffectStateTracker.IsActive(e.Target))
+                        continue;
+
+                    return true;
+                }
+                return false;
+            }
+
+            public static bool IsTargetTileBlocked(Vector3 pos)
+            {
+                List<MarkerEntry> snapshot = _entries;
+                if (snapshot.Count == 0) return false;
+
+                int tileX = Mathf.FloorToInt(pos.x);
+                int tileZ = Mathf.FloorToInt(pos.z);
+                float xMin = tileX;
+                float xMax = tileX + 1f;
+                float zMin = tileZ;
+                float zMax = tileZ + 1f;
+
+                float yCenter = pos.y;
+                float yMin = yCenter - 0.25f;
+                float yMax = yCenter + 1.0f;
+
+                for (int i = 0; i < snapshot.Count; i++)
+                {
+                    MarkerEntry e = snapshot[i];
+                    Bounds m = e.Bounds;
+                    if (m.max.x <= xMin || m.min.x >= xMax) continue;
+                    if (m.max.z <= zMin || m.min.z >= zMax) continue;
+                    if (m.max.y <= yMin || m.min.y >= yMax) continue;
+
+                    if (e.OnlyBlockWhileEffectActive && !EffectStateTracker.IsActive(e.Target))
+                        continue;
+
+                    return true;
+                }
+                return false;
+            }
+
+            public static bool IsTargetTileBlockedByActiveEffect(Vector3 pos)
+            {
+                List<MarkerEntry> snapshot = _entries;
+                if (snapshot.Count == 0) return false;
+
+                int tileX = Mathf.FloorToInt(pos.x);
+                int tileZ = Mathf.FloorToInt(pos.z);
+                float xMin = tileX;
+                float xMax = tileX + 1f;
+                float zMin = tileZ;
+                float zMax = tileZ + 1f;
+
+                float yCenter = pos.y;
+                float yMin = yCenter - 0.25f;
+                float yMax = yCenter + 1.0f;
+
+                for (int i = 0; i < snapshot.Count; i++)
+                {
+                    MarkerEntry e = snapshot[i];
+                    if (!e.OnlyBlockWhileEffectActive) continue;
+                    Bounds m = e.Bounds;
+                    if (m.max.x <= xMin || m.min.x >= xMax) continue;
+                    if (m.max.z <= zMin || m.min.z >= zMax) continue;
+                    if (m.max.y <= yMin || m.min.y >= yMax) continue;
+                    if (EffectStateTracker.IsActive(e.Target)) return true;
+                }
+                return false;
+            }
+
+            public static bool IsBlockBlockedByPermanentMarker(Block b)
+            {
+                if (b == null) return false;
+                List<MarkerEntry> snapshot = _entries;
+                if (snapshot.Count == 0) return false;
+
+                int tileX = b.tilePosition.x;
+                int tileZ = b.tilePosition.z;
+                float xMin = tileX;
+                float xMax = tileX + 1f;
+                float zMin = tileZ;
+                float zMax = tileZ + 1f;
+
+                float yCenter = b.centerPosition.y;
+                float yMin = yCenter - 0.25f;
+                float yMax = yCenter + 1.0f;
+
+                for (int i = 0; i < snapshot.Count; i++)
+                {
+                    MarkerEntry e = snapshot[i];
+                    if (e.OnlyBlockWhileEffectActive) continue;
+                    Bounds m = e.Bounds;
                     if (m.max.x <= xMin || m.min.x >= xMax) continue;
                     if (m.max.z <= zMin || m.min.z >= zMax) continue;
                     if (m.max.y <= yMin || m.min.y >= yMax) continue;
@@ -225,48 +366,54 @@ namespace NaturalPeepMovement
                 return false;
             }
 
-            // MUST be called only from the Unity main thread.
             public static void RefreshIfDueMainThread()
             {
                 float now = Time.unscaledTime;
                 if (_lastRefreshTime >= 0f && now - _lastRefreshTime < RefreshIntervalSeconds) return;
                 _lastRefreshTime = now;
 
-                // Empty registry → no work needed; just clear the snapshot if it isn't already.
                 if (MarkerRegistry.IsEmpty())
                 {
-                    if (_bounds.Count != 0) _bounds = new List<Bounds>();
+                    if (_entries.Count != 0) _entries = new List<MarkerEntry>();
                     return;
                 }
 
-                List<Bounds> newBounds = new List<Bounds>();
+                List<MarkerEntry> newEntries = new List<MarkerEntry>();
                 _scratchToRemove.Clear();
 
-                foreach (Deco d in _allDecos)
+                foreach (BuildableObject obj in _allMarkerCandidates)
                 {
-                    if (d == null)
+                    if (obj == null)
                     {
-                        _scratchToRemove.Add(d);
+                        _scratchToRemove.Add(obj);
                         continue;
                     }
 
-                    string name = d.getReferenceName();
+                    string name = obj.getReferenceName();
                     if (string.IsNullOrEmpty(name)) continue;
                     if (!MarkerRegistry.Contains(name)) continue;
 
-                    if (TryComputeWorldBounds(d, out Bounds wb))
-                        newBounds.Add(wb);
+                    if (!TryComputeWorldBounds(obj, out Bounds wb)) continue;
+
+                    MarkerOptions opts = MarkerRegistry.GetOptions(name);
+                    bool effectGated = opts != null && opts.OnlyBlockWhileEffectActive;
+                    newEntries.Add(new MarkerEntry
+                    {
+                        Bounds = wb,
+                        Target = obj,
+                        OnlyBlockWhileEffectActive = effectGated,
+                    });
                 }
 
                 for (int i = 0; i < _scratchToRemove.Count; i++)
-                    _allDecos.Remove(_scratchToRemove[i]);
+                    _allMarkerCandidates.Remove(_scratchToRemove[i]);
 
-                _bounds = newBounds;
+                _entries = newEntries;
             }
 
-            private static bool TryComputeWorldBounds(Deco d, out Bounds bounds)
+            private static bool TryComputeWorldBounds(BuildableObject obj, out Bounds bounds)
             {
-                MeshRenderer[] renderers = d.GetComponentsInChildren<MeshRenderer>();
+                MeshRenderer[] renderers = obj.GetComponentsInChildren<MeshRenderer>();
                 if (renderers == null || renderers.Length == 0)
                 {
                     bounds = default;
@@ -280,13 +427,14 @@ namespace NaturalPeepMovement
                 bounds = total;
                 return true;
             }
+
         }
 
-        // Drives MarkerCache.Refresh on the main thread.
         public class MarkerCacheTicker : MonoBehaviour
         {
             private void Update()
             {
+                MarkerCache.UpdateCurrentTimeMainThread();
                 MarkerCache.RefreshIfDueMainThread();
             }
         }
@@ -310,10 +458,6 @@ namespace NaturalPeepMovement
                 TileHasWall(cornerA) || TileHasWall(cornerB))
                 return false;
 
-            // Force cardinal-only approach to entrance/exit/queue/spawn tiles. Their state
-            // machines and cardinal-side attachment logic don't recognize diagonal arrivals,
-            // which leaves peeps in lost states (e.g., physically at the park entrance but
-            // never transitioning to LEFT_PARK, then wandering outside park bounds).
             if (IsCardinalOnlyBlock(from) || IsCardinalOnlyBlock(to) ||
                 IsCardinalOnlyBlock(cornerA) || IsCardinalOnlyBlock(cornerB))
                 return false;
@@ -321,8 +465,6 @@ namespace NaturalPeepMovement
             return true;
         }
 
-        // Queue tiles are already excluded by IsWalkablePath. Spawn objects live on
-        // GuestEntrance tiles, so blocking GuestEntrance here covers them too.
         private static bool IsCardinalOnlyBlock(Block b)
         {
             if (b == null) return false;
@@ -338,7 +480,6 @@ namespace NaturalPeepMovement
             return true;
         }
 
-        // True if tile has any wall, door, or gate at this height.
         private static bool TileHasWall(Block tile)
         {
             if (tile == null) return false;
@@ -357,7 +498,6 @@ namespace NaturalPeepMovement
             return false;
         }
 
-        // Hide diagonals from path visual bitmask.
         public static void Block_getConnectedSidesBitmask_Postfix(ref int __result)
         {
             __result &= 0x0F;
@@ -366,7 +506,6 @@ namespace NaturalPeepMovement
         private static readonly AccessTools.FieldRef<PathTileMapper, Dictionary<int, Vector3>> _forwardsRef =
             AccessTools.FieldRefAccess<PathTileMapper, Dictionary<int, Vector3>>("forwards");
 
-        // Graceful fallback for missing tile forwards.
         public static bool PathTileMapper_getTileForwardFor_Prefix(PathTileMapper __instance, int tileIndex, ref Vector3 __result)
         {
             if (__instance == null)
@@ -397,7 +536,6 @@ namespace NaturalPeepMovement
         private static readonly AccessTools.FieldRef<PathTileMapper, Dictionary<int, GameObject>> _tileMapRef =
             AccessTools.FieldRefAccess<PathTileMapper, Dictionary<int, GameObject>>("tileMap");
 
-        // Silent fallback for missing tile prefabs.
         public static bool PathTileMapper_getTileFor_Prefix(PathTileMapper __instance, int tileIndex, ref GameObject __result)
         {
             if (__instance == null)
@@ -425,7 +563,6 @@ namespace NaturalPeepMovement
             return false;
         }
 
-        // Skip cardinal-only sign check on diagonal approach.
         public static bool Path_canBeSteppedOn_Prefix(Path __instance, Block fromBlock, ref bool __result)
         {
             if (__instance == null || fromBlock == null) return true;
@@ -438,7 +575,6 @@ namespace NaturalPeepMovement
             return false;
         }
 
-        // Tunnel frames only exist on cardinal sides.
         public static bool Block_instantiateTunnelFrame_Prefix(int side, ref GameObject __result)
         {
             if (side < 4) return true;
@@ -446,7 +582,6 @@ namespace NaturalPeepMovement
             return false;
         }
 
-        // A* marker filter; runs late so visual bitmask isn't affected.
         public static void Pathfinding_PathNode_fillReachableNodesList_Postfix(Pathfinding.PathfindingData pathfindingData)
         {
             if (pathfindingData == null) return;
@@ -466,23 +601,153 @@ namespace NaturalPeepMovement
             }
         }
 
-        // Per-step marker filter; A* alone misses these decisions.
         public static void Block_canBeWanderedOn_Postfix(Block __instance, ref bool __result)
         {
             if (!__result) return;
-            if (MarkerCache.IsBlockBlocked(__instance))
+            if (MarkerCache.IsBlockBlockedByPermanentMarker(__instance))
                 __result = false;
         }
 
-        // Adds new decos to MarkerCache as they Awake. Filters by `is Deco` so other
-        // SerializedMonoBehaviour subclasses (peeps, rides, etc.) cost only a type check.
+        private const float ReleaseDelayMin = 0.5f;
+        private const float ReleaseDelayMax = 1.5f;
+
+        private struct WaitInfo
+        {
+            public float ReleaseTime;
+        }
+
+        private static readonly ConcurrentDictionary<Person, WaitInfo> _waitInfo =
+            new ConcurrentDictionary<Person, WaitInfo>();
+
+        private static readonly System.Threading.ThreadLocal<System.Random> _random =
+            new System.Threading.ThreadLocal<System.Random>(
+                () => new System.Random(System.Guid.NewGuid().GetHashCode()));
+
+        private static readonly AccessTools.FieldRef<WalkToPositionAction, Vector3> _walkToPositionTargetRef =
+            AccessTools.FieldRefAccess<WalkToPositionAction, Vector3>("position");
+
+        public static void WalkToPositionAction_run_Prefix(
+            WalkToPositionAction __instance,
+            DataContext dataContext)
+        {
+            if (dataContext == null) return;
+            Person person = dataContext.person;
+            if (person == null) return;
+
+            Block currentBlock = person.currentBlock;
+            if (currentBlock != null && MarkerCache.IsBlockBlocked(currentBlock))
+            {
+                if (_waitInfo.ContainsKey(person))
+                    ClearWaitState(person, dataContext);
+                return;
+            }
+
+            Vector3 target = _walkToPositionTargetRef(__instance);
+            bool targetBlocked = MarkerCache.IsTargetTileBlocked(target);
+            bool targetBlockedByEffect = targetBlocked && MarkerCache.IsTargetTileBlockedByActiveEffect(target);
+
+            float now = MarkerCache.CurrentTimeApprox;
+            WaitInfo info;
+            bool wasWaiting = _waitInfo.TryGetValue(person, out info);
+
+            if (targetBlocked)
+            {
+                if (targetBlockedByEffect)
+                {
+                    if (!wasWaiting)
+                    {
+                        info = new WaitInfo { ReleaseTime = 0f };
+                        _waitInfo[person] = info;
+                    }
+                    else if (info.ReleaseTime != 0f)
+                    {
+                        info.ReleaseTime = 0f;
+                        _waitInfo[person] = info;
+                    }
+                }
+
+                dataContext.set(WalkToPositionAction.speedLimitKey, 0f);
+                person.velocity = Vector3.zero;
+                return;
+            }
+
+            if (!wasWaiting) return;
+
+            if (info.ReleaseTime == 0f)
+            {
+                info.ReleaseTime = now + ReleaseDelayMin
+                    + (float)(_random.Value.NextDouble() * (ReleaseDelayMax - ReleaseDelayMin));
+                _waitInfo[person] = info;
+            }
+
+            if (now < info.ReleaseTime)
+            {
+                dataContext.set(WalkToPositionAction.speedLimitKey, 0f);
+                person.velocity = Vector3.zero;
+                return;
+            }
+
+            ClearWaitState(person, dataContext);
+        }
+
+        public static bool Person_checkIfReachedNewBlock_Prefix(Person __instance, int x, float y, int z)
+        {
+            if (__instance == null) return true;
+
+            GameController gc = GameController.Instance;
+            if (gc == null || gc.park == null || gc.park.blockData == null) return true;
+
+            Block candidate;
+            try
+            {
+                candidate = gc.park.blockData.getBlock(x, y, z);
+            }
+            catch
+            {
+                return true;
+            }
+
+            if (candidate == null) return true;
+            if (candidate == __instance.currentBlock) return true;
+
+            Block current = __instance.currentBlock;
+            if (current != null && MarkerCache.IsBlockBlocked(current)) return true;
+
+            if (!MarkerCache.IsBlockBlocked(candidate)) return true;
+
+            if (current != null)
+            {
+                __instance.currentPosition = current.centerPosition;
+                __instance.velocity = Vector3.zero;
+            }
+
+            return false;
+        }
+
+        private static void ClearWaitState(Person person, DataContext dataContext)
+        {
+            WaitInfo removed;
+            _waitInfo.TryRemove(person, out removed);
+            ClearSpeedLimit(dataContext);
+        }
+
+        private static void ClearSpeedLimit(DataContext dataContext)
+        {
+            dataContext.set(WalkToPositionAction.speedLimitKey, float.MaxValue);
+        }
+
         public static void SerializedMonoBehaviour_Awake_Postfix(SerializedMonoBehaviour __instance)
         {
             Deco d = __instance as Deco;
-            if (d != null) MarkerCache.RegisterDeco(d);
+            if (d != null) MarkerCache.RegisterCandidate(d);
+
+            PathAttachment pa = __instance as PathAttachment;
+            if (pa != null) MarkerCache.RegisterCandidate(pa);
+
+            EffectBox box = __instance as EffectBox;
+            if (box != null) EffectStateTracker.OnEffectBoxAwake(box);
         }
 
-        // Octile distance for diagonals + turn penalty for straight-line preference.
         public static void Pathfinding_PathNode_calculateCosts_Postfix(
             Pathfinding.PathNode __instance,
             Pathfinding.PathNode fromNode,
@@ -503,10 +768,6 @@ namespace NaturalPeepMovement
                 __instance.tile.x, __instance.tile.y, __instance.tile.z);
             float mult = pathfindingAgent.pathfindingCostsMultiplier(block1, block2);
 
-            // Override the vanilla cost only for diagonal moves. The factor 0.5 is slightly
-            // above the true sqrt(2)-1 (~0.4142), so diagonals still save steps over the
-            // cardinal equivalent but with less margin — biasing A* toward straighter routes
-            // when path lengths are similar.
             if (absDx != 0 && absDz != 0)
             {
                 float dy = Mathf.Abs(__instance.tile.y - fromNode.tile.y);
@@ -514,9 +775,6 @@ namespace NaturalPeepMovement
                 __result = (horizontal + dy) * mult + RandomGenerator.Instance().value * 0.01f;
             }
 
-            // Turn penalty: any change in step direction (relative to the previous step)
-            // adds a small extra cost. Pushes A* toward straight-line continuations and
-            // collapses equal-cost zig-zag alternatives onto the smoothest route.
             if (fromNode.parentNode != null)
             {
                 int prevDx = fromNode.tile.x - fromNode.parentNode.tile.x;

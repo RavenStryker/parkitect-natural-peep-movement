@@ -35,6 +35,10 @@
       <HintPath>C:\Users\RavenStryker\Documents\Parkitect\Mods\NaturalPeepMovement\0Harmony.dll</HintPath>
       <Private>False</Private>
     </Reference>
+    <Reference Include="Newtonsoft.Json">
+      <HintPath>..\..\..\..\..\Program Files (x86)\Steam\steamapps\common\Parkitect\Parkitect_Data\Managed\Newtonsoft.Json.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
     <Reference Include="Parkitect, Culture=neutral, PublicKeyToken=null">
       <HintPath>..\..\..\..\..\Program Files (x86)\Steam\steamapps\common\Parkitect\Parkitect_Data\Managed\Parkitect.dll</HintPath>
       <Private>False</Private>
@@ -79,6 +83,7 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="EffectStateTracker.cs" />
     <Compile Include="HotkeySettings.cs" />
     <Compile Include="Main.cs" />
     <Compile Include="MarkerRegistry.cs" />

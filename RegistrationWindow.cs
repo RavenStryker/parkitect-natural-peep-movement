@@ -144,7 +144,6 @@ namespace NaturalPeepMovement
             string selected = _presetDropdown.options[index].text;
             _inputField.text = selected;
 
-            // Snap dropdown back to the placeholder so future picks of the same item still fire.
             _presetDropdown.SetValueWithoutNotify(0);
             if (_presetDropdown.captionText != null)
                 _presetDropdown.captionText.text = DropdownPlaceholder;
@@ -184,7 +183,6 @@ namespace NaturalPeepMovement
                 AddRow(names[i]);
         }
 
-        // Refresh everything (used after external registry changes).
         public void RefreshAll()
         {
             UpdateStatus();
@@ -194,12 +192,16 @@ namespace NaturalPeepMovement
 
         private void AddRow(string name)
         {
-            // Anchors keep button width fixed regardless of name length.
             const float ButtonWidth = 84f;
             const float ButtonHeight = 22f;
             const float HPad = 6f;
             const float Gap = 6f;
             const float VPad = 2f;
+            const float FxToggleSize = 22f;
+
+            bool showFxToggle = EffectStateTracker.IsEnabled;
+            float nameRightInset = HPad + ButtonWidth + Gap;
+            if (showFxToggle) nameRightInset += FxToggleSize + Gap;
 
             GameObject rowGO = new GameObject("Row_" + name, typeof(RectTransform));
             rowGO.transform.SetParent(_listContent, false);
@@ -229,10 +231,51 @@ namespace NaturalPeepMovement
             xRT.sizeDelta = new Vector2(ButtonWidth, ButtonHeight);
             xRT.anchoredPosition = new Vector2(-HPad, 0f);
 
+            if (showFxToggle)
+            {
+                MarkerOptions opts = MarkerRegistry.GetOptions(name);
+                bool isOn = opts != null && opts.OnlyBlockWhileEffectActive;
+
+                GameObject fxGO = new GameObject("EffectGatedToggle", typeof(RectTransform));
+                fxGO.transform.SetParent(rowGO.transform, false);
+                Image fxImg = fxGO.AddComponent<Image>();
+                fxImg.sprite = GetRoundedSprite(SubPanelCornerRadius);
+                fxImg.type = Image.Type.Sliced;
+                fxImg.color = isOn ? RegisterColor : new Color(0.6f, 0.6f, 0.6f, 0.5f);
+                Button fxBtn = fxGO.AddComponent<Button>();
+                fxBtn.targetGraphic = fxImg;
+                fxBtn.transition = Selectable.Transition.None;
+
+                RectTransform fxRT = (RectTransform)fxGO.transform;
+                fxRT.anchorMin = new Vector2(1f, 0.5f);
+                fxRT.anchorMax = new Vector2(1f, 0.5f);
+                fxRT.pivot = new Vector2(1f, 0.5f);
+                fxRT.sizeDelta = new Vector2(FxToggleSize, FxToggleSize);
+                fxRT.anchoredPosition = new Vector2(-(HPad + ButtonWidth + Gap), 0f);
+
+                GameObject fxLabelGO = new GameObject("Label", typeof(RectTransform));
+                fxLabelGO.transform.SetParent(fxGO.transform, false);
+                RectTransform fxLabelRT = (RectTransform)fxLabelGO.transform;
+                fxLabelRT.anchorMin = Vector2.zero;
+                fxLabelRT.anchorMax = Vector2.one;
+                fxLabelRT.offsetMin = Vector2.zero;
+                fxLabelRT.offsetMax = Vector2.zero;
+                TextMeshProUGUI fxLabel = fxLabelGO.AddComponent<TextMeshProUGUI>();
+                fxLabel.text = "FX";
+                fxLabel.fontSize = 10f;
+                fxLabel.alignment = TextAlignmentOptions.Center;
+                fxLabel.color = Color.white;
+                fxLabel.fontStyle = FontStyles.Bold;
+
+                string capturedFx = name;
+                Image capturedImg = fxImg;
+                fxBtn.onClick.AddListener(() => OnEffectGatedToggleClicked(capturedFx, capturedImg));
+            }
+
             GameObject nameGO = new GameObject("Name", typeof(RectTransform));
             nameGO.transform.SetParent(rowGO.transform, false);
             TextMeshProUGUI nameText = nameGO.AddComponent<TextMeshProUGUI>();
-            nameText.text = name;
+            nameText.text = GetDisplayName(name);
             nameText.fontSize = 12f;
             nameText.alignment = TextAlignmentOptions.MidlineLeft;
             nameText.color = TextColor;
@@ -244,7 +287,13 @@ namespace NaturalPeepMovement
             nameRT.anchorMax = new Vector2(1f, 1f);
             nameRT.pivot = new Vector2(0f, 0.5f);
             nameRT.offsetMin = new Vector2(HPad, VPad);
-            nameRT.offsetMax = new Vector2(-(HPad + ButtonWidth + Gap), -VPad);
+            nameRT.offsetMax = new Vector2(-nameRightInset, -VPad);
+
+            Button nameBtn = nameGO.AddComponent<Button>();
+            nameBtn.targetGraphic = nameText;
+            nameBtn.transition = Selectable.Transition.None;
+            string capturedNameBtn = name;
+            nameBtn.onClick.AddListener(() => StartRename(capturedNameBtn, nameGO));
 
             GameObject xLabelGO = new GameObject("Label", typeof(RectTransform));
             xLabelGO.transform.SetParent(xGO.transform, false);
@@ -261,6 +310,80 @@ namespace NaturalPeepMovement
 
             string captured = name;
             xBtn.onClick.AddListener(() => OnRowUnregisterClicked(captured));
+        }
+
+        private static string GetDisplayName(string prefabName)
+        {
+            MarkerOptions opts = MarkerRegistry.GetOptions(prefabName);
+            if (opts != null && !string.IsNullOrEmpty(opts.DisplayName))
+                return opts.DisplayName;
+            return prefabName;
+        }
+
+        private GameObject _activeRenameInputGO;
+        private string _renamingPrefabName;
+
+        private void StartRename(string prefabName, GameObject nameGO)
+        {
+            if (_activeRenameInputGO != null)
+                RebuildList();
+
+            if (nameGO == null) return;
+            RectTransform nameRT = (RectTransform)nameGO.transform;
+            Transform parent = nameGO.transform.parent;
+            if (parent == null) return;
+
+            TMP_InputField input = BuildInputField(parent.gameObject, "");
+            RectTransform inputRT = (RectTransform)input.transform;
+            inputRT.anchorMin = nameRT.anchorMin;
+            inputRT.anchorMax = nameRT.anchorMax;
+            inputRT.pivot = nameRT.pivot;
+            inputRT.offsetMin = nameRT.offsetMin;
+            inputRT.offsetMax = nameRT.offsetMax;
+            inputRT.sizeDelta = nameRT.sizeDelta;
+            inputRT.anchoredPosition = nameRT.anchoredPosition;
+
+            input.text = GetDisplayName(prefabName);
+            input.characterLimit = 64;
+
+            string captured = prefabName;
+            input.onEndEdit.AddListener(newText => CommitRename(captured, newText));
+
+            nameGO.SetActive(false);
+            _activeRenameInputGO = input.gameObject;
+            _renamingPrefabName = prefabName;
+
+            input.ActivateInputField();
+            input.Select();
+        }
+
+        private void CommitRename(string prefabName, string newText)
+        {
+            string trimmed = (newText ?? string.Empty).Trim();
+            MarkerOptions opts = MarkerRegistry.GetOptions(prefabName);
+            if (opts != null)
+            {
+                opts.DisplayName = string.IsNullOrEmpty(trimmed) ? null : trimmed;
+                MarkerRegistry.SetOptions(prefabName, opts);
+            }
+
+            _activeRenameInputGO = null;
+            _renamingPrefabName = null;
+            RebuildList();
+        }
+
+        private void OnEffectGatedToggleClicked(string name, Image checkboxImg)
+        {
+            MarkerOptions opts = MarkerRegistry.GetOptions(name);
+            if (opts == null) return;
+            opts.OnlyBlockWhileEffectActive = !opts.OnlyBlockWhileEffectActive;
+            MarkerRegistry.SetOptions(name, opts);
+            if (checkboxImg != null)
+            {
+                checkboxImg.color = opts.OnlyBlockWhileEffectActive
+                    ? RegisterColor
+                    : new Color(0.6f, 0.6f, 0.6f, 0.5f);
+            }
         }
 
         private static RectTransform BuildScrollView(GameObject parent)
@@ -291,7 +414,6 @@ namespace NaturalPeepMovement
             viewportRT.anchorMax = Vector2.one;
             viewportRT.offsetMin = Vector2.zero;
             viewportRT.offsetMax = Vector2.zero;
-            // Rounded mask clips scrolled content to panel shape.
             Image viewportImg = viewportGO.AddComponent<Image>();
             viewportImg.sprite = GetRoundedSprite(SubPanelCornerRadius);
             viewportImg.type = Image.Type.Sliced;
@@ -329,7 +451,6 @@ namespace NaturalPeepMovement
 
         public static RegistrationWindow Build(string decoName)
         {
-            // Outer content GO; UIWindowFrame manages sizing.
             GameObject contentGO = new GameObject("MarkerRegistrationContent", typeof(RectTransform));
             RectTransform rt = (RectTransform)contentGO.transform;
             rt.sizeDelta = new Vector2(360f, 330f);
@@ -346,7 +467,6 @@ namespace NaturalPeepMovement
             settings.spawnLocation = UIWindowSettings.SpawnLocation.Free;
             settings.defaultWindowPosition = new Vector2(0.5f, 0.5f);
 
-            // Inner rounded panel fills the frame area.
             GameObject inner = new GameObject("InnerPanel", typeof(RectTransform));
             inner.transform.SetParent(contentGO.transform, false);
             RectTransform innerRT = (RectTransform)inner.transform;
@@ -406,16 +526,13 @@ namespace NaturalPeepMovement
             btnLabel.fontSize = 14f;
             btnLabel.color = Color.white;
 
-            // Preset dropdown fills the input field below.
             TMP_Dropdown presetDropdown = BuildPresetDropdown(inner);
 
-            // Input row + Load + Save (anchored for fixed widths).
             TMP_InputField inputField;
             Button loadButton;
             Button saveButton;
             BuildInputRow(inner, out inputField, out loadButton, out saveButton);
 
-            // Status line; reserved height avoids layout shift.
             GameObject statusLineGO = new GameObject("StatusLine", typeof(RectTransform));
             statusLineGO.transform.SetParent(inner.transform, false);
             TextMeshProUGUI statusLine = statusLineGO.AddComponent<TextMeshProUGUI>();
@@ -461,7 +578,6 @@ namespace NaturalPeepMovement
             saveButton.onClick.AddListener(win.OnSaveClicked);
             inputField.onValueChanged.AddListener(win.OnInputChanged);
             presetDropdown.onValueChanged.AddListener(win.OnPresetDropdownChanged);
-            // Empty input → buttons disabled.
             win.OnInputChanged(inputField.text);
 
             return win;
@@ -483,7 +599,6 @@ namespace NaturalPeepMovement
             bg.type = Image.Type.Sliced;
             bg.color = InputBackgroundColor;
 
-            // Caption: current selection, shown when popup is closed.
             GameObject labelGO = new GameObject("Label", typeof(RectTransform));
             labelGO.transform.SetParent(ddGO.transform, false);
             RectTransform labelRT = (RectTransform)labelGO.transform;
@@ -513,7 +628,6 @@ namespace NaturalPeepMovement
             arrowText.color = TextColor;
             arrowText.alignment = TextAlignmentOptions.Center;
 
-            // Template popup; inactive until opened by click.
             GameObject templateGO = new GameObject("Template", typeof(RectTransform));
             templateGO.transform.SetParent(ddGO.transform, false);
             RectTransform templateRT = (RectTransform)templateGO.transform;
@@ -528,7 +642,6 @@ namespace NaturalPeepMovement
             templateBG.type = Image.Type.Sliced;
             templateBG.color = ListBackgroundColor;
 
-            // Viewport mask clips popup to rounded shape.
             GameObject viewportGO = new GameObject("Viewport", typeof(RectTransform));
             viewportGO.transform.SetParent(templateGO.transform, false);
             RectTransform viewportRT = (RectTransform)viewportGO.transform;
@@ -552,7 +665,6 @@ namespace NaturalPeepMovement
             contentRT.anchoredPosition = Vector2.zero;
             contentRT.sizeDelta = new Vector2(0f, 24f);
 
-            // Item template (one row in the popup).
             GameObject itemGO = new GameObject("Item", typeof(RectTransform));
             itemGO.transform.SetParent(contentGO.transform, false);
             RectTransform itemRT = (RectTransform)itemGO.transform;
@@ -572,7 +684,6 @@ namespace NaturalPeepMovement
             Image itemBgImg = itemBgGO.AddComponent<Image>();
             itemBgImg.color = Color.white;
 
-            // Hover/select tint via Toggle color block.
             ColorBlock cb = itemToggle.colors;
             cb.normalColor = new Color(1f, 1f, 1f, 0f);
             cb.highlightedColor = new Color(RegisterColor.r, RegisterColor.g, RegisterColor.b, 0.20f);
@@ -581,7 +692,6 @@ namespace NaturalPeepMovement
             cb.disabledColor = new Color(1f, 1f, 1f, 0f);
             itemToggle.colors = cb;
 
-            // Required by Toggle; unused visually.
             GameObject itemCheckGO = new GameObject("ItemCheckmark", typeof(RectTransform));
             itemCheckGO.transform.SetParent(itemGO.transform, false);
             RectTransform itemCheckRT = (RectTransform)itemCheckGO.transform;
@@ -750,13 +860,11 @@ namespace NaturalPeepMovement
             field.characterLimit = 64;
             field.caretColor = TextColor;
             field.selectionColor = new Color(RegisterColor.r, RegisterColor.g, RegisterColor.b, 0.4f);
-            // Skip Selectable tint so focus doesn't darken the bg.
             field.transition = Selectable.Transition.None;
 
             return field;
         }
 
-        // Accepts 6 hex chars (no leading #).
         private static Color HexColor(string hex)
         {
             int r = int.Parse(hex.Substring(0, 2), System.Globalization.NumberStyles.HexNumber);
@@ -765,7 +873,6 @@ namespace NaturalPeepMovement
             return new Color(r / 255f, g / 255f, b / 255f, 1f);
         }
 
-        // Sliced sprite tinted by Image.color; border = radius.
         private static Sprite GetRoundedSprite(int radius)
         {
             Sprite cached;

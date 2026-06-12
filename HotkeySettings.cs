@@ -5,7 +5,6 @@ using UnityEngine;
 
 namespace NaturalPeepMovement
 {
-    // Hotkey combo: Ctrl/Shift/Alt toggles + a non-modifier main key.
     internal static class HotkeySettings
     {
         public static readonly KeyCode DefaultMainKey = KeyCode.Backslash;
@@ -122,7 +121,6 @@ namespace NaturalPeepMovement
                 try
                 {
                     Persisted p = JsonUtility.FromJson<Persisted>(File.ReadAllText(path));
-                    // Missing mainKey = old/unknown format; keep all defaults.
                     if (p == null || string.IsNullOrEmpty(p.mainKey)) return;
 
                     try { _mainKey = (KeyCode)Enum.Parse(typeof(KeyCode), p.mainKey, ignoreCase: true); }
@@ -139,7 +137,6 @@ namespace NaturalPeepMovement
             }
         }
 
-        // Caller must hold _lock.
         private static void SaveLocked()
         {
             string path = GetFilePath();
