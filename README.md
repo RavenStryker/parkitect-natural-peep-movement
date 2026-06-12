@@ -19,11 +19,12 @@ A Parkitect mod that lets peeps and workers walk diagonally between path tiles i
 - **Multiplayer.** All players need the same registered list for pathfinding to stay consistent — share the preset JSON with co-builders the same way you share the park file.
 
   **Tool Window**  
-  <img width="496" height="748" alt="image1" src="https://github.com/user-attachments/assets/9dd5d123-483e-48c2-a888-2ff8d2950cf8" />
+<img width="496" height="649" alt="image" src="https://github.com/user-attachments/assets/716ecf03-be3a-4606-b6be-a1415d06ed05" />
+
 
   **UI Notificiations**  
-  <img width="307" height="178" alt="image2" src="https://github.com/user-attachments/assets/25bd0261-7fa4-4d5d-b481-de729d5ecdf3" />  
-  <img width="313" height="75" alt="image3" src="https://github.com/user-attachments/assets/5672da14-f051-4b20-8b08-9d98a75e1df7" />
+<img width="307" height="178" alt="image2" src="https://github.com/user-attachments/assets/25bd0261-7fa4-4d5d-b481-de729d5ecdf3" />  
+<img width="313" height="75" alt="image3" src="https://github.com/user-attachments/assets/5672da14-f051-4b20-8b08-9d98a75e1df7" />
 
 
 
