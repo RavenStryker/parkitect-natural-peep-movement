@@ -18,7 +18,7 @@ A Parkitect mod that lets peeps and workers walk diagonally between path tiles i
 - **Park-name auto-load.** If the loaded park's name matches a preset filename (e.g. `River Park.park` <<>> `River Park.json`), the preset loads automatically on park entry and a notification confirms how many markers were registered. (See screenshots below)
 - **Multiplayer.** All players need the same registered list for pathfinding to stay consistent — share the preset JSON with co-builders the same way you share the park file.
 
-  **Tool Window**  
+**Tool Window**  
 <img width="496" height="649" alt="image" src="https://github.com/user-attachments/assets/716ecf03-be3a-4606-b6be-a1415d06ed05" />
 
 
